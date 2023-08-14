@@ -1,10 +1,11 @@
 ﻿using System.IO.Compression;
+using System.Text;
 
 namespace LightvnTools
 {
     public class Program
     {
-        static readonly string VERSION = "0.0.1";
+        static readonly string VERSION = "1.0.0";
 
         // PKZip signature
         static readonly byte[] PKZIP = { 0x50, 0x4B, 0x03, 0x04 };
@@ -12,34 +13,8 @@ namespace LightvnTools
         // Key used to decrypt the file header and footer (reverse)
         // Text: `d6c5fKI3GgBWpZF3Tz6ia3kF0`
         // Source: https://github.com/morkt/GARbro/issues/440
-        static readonly byte[] KEY =
-        {
-            0x64,
-            0x36,
-            0x63,
-            0x35,
-            0x66,
-            0x4B,
-            0x49,
-            0x33,
-            0x47,
-            0x67,
-            0x42,
-            0x57,
-            0x70,
-            0x5A,
-            0x46,
-            0x33,
-            0x54,
-            0x7A,
-            0x36,
-            0x69,
-            0x61,
-            0x33,
-            0x6B,
-            0x46,
-            0x30
-        };
+        static readonly byte[] KEY = { 0x64, 0x36, 0x63, 0x35, 0x66, 0x4B, 0x49, 0x33, 0x47, 0x67, 0x42, 0x57, 0x70, 0x5A, 0x46, 0x33, 0x54, 0x7A, 0x36, 0x69, 0x61, 0x33, 0x6B, 0x46, 0x30 };
+        static readonly byte[] REVERSED_KEY = { 0x30, 0x46, 0x6B, 0x33, 0x61, 0x69, 0x36, 0x7A, 0x54, 0x33, 0x46, 0x5A, 0x70, 0x57, 0x42, 0x67, 0x47, 0x33, 0x49, 0x4B, 0x66, 0x35, 0x63, 0x36, 0x64 };
 
         static void Main(string[] args)
         {
@@ -155,21 +130,17 @@ namespace LightvnTools
             try
             {
                 byte[] buffer;
-                byte[] REVERSED_KEY = KEY;
-                Array.Reverse(REVERSED_KEY);
+                int bufferLength;
 
                 using (FileStream inputStream = File.OpenRead(filePath))
                 {
-                    using MemoryStream outputStream = new();
-                    inputStream.CopyTo(outputStream);
-                    buffer = outputStream.ToArray();
+                    buffer = new byte[bufferLength = (int)inputStream.Length];
+                    inputStream.Read(buffer, 0, bufferLength);
                 }
 
-                int length = buffer.Length;
-
-                if (length < 100)
+                if (bufferLength < 100)
                 {
-                    if (length == 0)
+                    if (bufferLength == 0)
                     {
                         Console.WriteLine($"Skipping {filePath}. File is empty.");
                         return;
@@ -177,24 +148,23 @@ namespace LightvnTools
 
                     Console.WriteLine($"File size is smaller than 100 bytes: {filePath}");
 
-                    // XOR the first 100 bytes
-                    for (int i = 0; i < length; i++)
-                        buffer[i] ^= REVERSED_KEY[i % 25];
+                    // XOR entire bytes
+                    for (int i = 0; i < bufferLength; i++)
+                        buffer[i] ^= REVERSED_KEY[i % KEY.Length];
                 }
                 else
                 {
-                    // XOR the last 100 bytes
-                    for (int i = 0; i < 99; i++)
-                        buffer[length - 99 + i] ^= REVERSED_KEY[i % 25];
-
                     // XOR the first 100 bytes
                     for (int i = 0; i < 100; i++)
-                        buffer[i] ^= KEY[i % 25];
+                        buffer[i] ^= KEY[i % KEY.Length];
+
+                    // XOR the last 100 bytes
+                    for (int i = 0; i < 99; i++)
+                        buffer[bufferLength - 99 + i] ^= REVERSED_KEY[i % KEY.Length];
                 }
-                using (FileStream outputStream = File.OpenWrite(filePath))
-                {
-                    outputStream.Write(buffer, 0, length);
-                }
+
+                using FileStream outputStream = File.OpenWrite(filePath);
+                outputStream.Write(buffer, 0, bufferLength);
             }
             catch (Exception ex)
             {

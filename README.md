@@ -2,9 +2,7 @@
 
 ## Overview
 
-**<p align="center">This tool is very unstable and not work on the newer version of Light.vn</p>**
-
-Light.vnTools is a simple unpack and repacking tool for game created using [Light.vn](https://lightvn.net "Light.vn") game engine.
+Light.vnTools is an unpack and repacking tool for game created with [Light.vn](https://lightvn.net "Light.vn") game engine.
 
 ## Requirements
 
@@ -30,4 +28,4 @@ For more information about the GNU General Public License version 3.0 (GNU GPL 3
 
 ## Disclaimer
 
-This tool is intentionally created as a modding tool to translate the visual novel game created with Light.vn game engine. I didn't condone any piracy in any forms such as taking the game visual and sell it illegally which harm the developer. Use the tool at your own risk (DWYOR - Do What You Own Risk).
+This tool is intentionally created as a modding tool to translate the visual novel game created with Light.vn game engine. I didn't condone any piracy in any forms such as taking the game visual and sell it illegally which harm the game developer. Use the tool at your own risk (DWYOR - Do What You Own Risk).
