@@ -1,11 +1,11 @@
-﻿using System.IO.Compression;
-using System.Text;
+﻿using System.Text;
+using ICSharpCode.SharpZipLib.Zip;
 
 namespace LightvnTools
 {
     public class Program
     {
-        static readonly string VERSION = "1.0.0";
+        static readonly string VERSION = "1.1.0";
 
         // PKZip signature
         static readonly byte[] PKZIP = { 0x50, 0x4B, 0x03, 0x04 };
@@ -34,70 +34,172 @@ namespace LightvnTools
             }
 
             string input = args[0];
+            string zipPassword = Encoding.UTF8.GetString(KEY);
 
-            // Unpack .vndat
             if (File.Exists(input))
-            {
-                if (!IsZip(input))
-                {
-                    Console.WriteLine("Not a .vndat (zip) file!");
-                    Console.ReadLine();
-                    return;
-                }
+                Unpack(input, Path.GetFileNameWithoutExtension(input), zipPassword);
 
-                string outputFolder = Path.GetFileNameWithoutExtension(input);
-
-                if (!Directory.Exists(outputFolder))
-                    Directory.CreateDirectory(outputFolder);
-
-                // Extract .vndat file
-                Console.WriteLine($"Extracting {Path.GetFileName(input)} to ./{outputFolder}/...");
-                ZipFile.ExtractToDirectory(input, outputFolder, true);
-
-                // Decrypt .vndat file contents
-                string[] files = GetFilesRecursive(outputFolder);
-
-                foreach (string file in files)
-                {
-                    Console.WriteLine($"Decrypting {file}...");
-                    XORFile(file);
-                }
-
-                Console.WriteLine("Done.");
-            }
-
-            // Repack
             if (Directory.Exists(input))
-            {
-                string[] files = GetFilesRecursive(input);
-
-                // Encrypting the files back
-                foreach (string file in files)
-                {
-                    Console.WriteLine($"Encrypting {Path.GetFileName(file)}...");
-                    XORFile(file);
-                }
-
-                // Archiving to .vndat
-                string fileName = $"{input}.vndat";
-
-                Console.WriteLine($"Archiving as {fileName}...");
-                File.Copy(fileName, $"{fileName}.bak");
-                File.Delete(fileName);
-                ZipFile.CreateFromDirectory(input, fileName, CompressionLevel.Optimal, false);
-
-                Console.WriteLine("Done.");
-            }
+                Repack(input, zipPassword);
 
             Console.ReadLine();
         }
 
         /// <summary>
-        /// Check if the given file is Zip or not.
+        /// Extract `.vndat` file.
+        /// </summary>
+        /// <param name="vndatFile"></param>
+        /// <param name="outputFolder"></param>
+        /// <param name="password"></param>
+        static void Unpack(string vndatFile, string outputFolder, string? password = "")
+        {
+            if (!IsVndat(vndatFile))
+            {
+                Console.WriteLine($"{Path.GetFileName(vndatFile)} isn\'t a `.vndat` (zip) file!");
+                return;
+            }
+
+            bool usePassword = IsPasswordProtectedZip(vndatFile);
+
+            using ZipFile zipFile = new(vndatFile);
+            Directory.CreateDirectory(outputFolder);
+
+            // Old Light.vn encrypt the `.vndat` file with `KEY` as the password.
+            if (usePassword)
+            {
+                Console.WriteLine($"{Path.GetFileName(vndatFile)} are password protected. Using `{password}` as the password.");
+                zipFile.Password = password;
+            }
+
+            if (zipFile.Count > 0)
+            {
+                Console.WriteLine($"Extracting {Path.GetFileName(vndatFile)}...");
+
+                foreach (ZipEntry entry in zipFile)
+                {
+                    string? entryPath = Path.Combine(outputFolder, entry.Name);
+                    Directory.CreateDirectory(Path.GetDirectoryName(entryPath));
+
+                    if (!entry.IsDirectory)
+                    {
+                        try
+                        {
+                            Console.WriteLine($"Writing {entryPath}...");
+
+                            using Stream inputStream = zipFile.GetInputStream(entry);
+                            using FileStream outputStream = File.Create(entryPath);
+                            inputStream.CopyTo(outputStream);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Failed to write {entryPath}! {ex.Message}");
+                        }
+                    }
+                }
+
+                Console.WriteLine("Done.");
+            }
+
+            // Only XOR `.vndat` contents that's not password protected.
+            if (!usePassword)
+            {
+                string[] files = GetFilesRecursive(outputFolder);
+
+                if (files.Length > 0)
+                {
+                    foreach (string file in files)
+                    {
+                        Console.WriteLine($"Decrypting {file}...");
+                        XorVndatContent(file);
+                    }
+
+                    Console.WriteLine("Done.");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Archive folder as `.vndat` file.
+        /// </summary>
+        /// <param name="sourceFolder"></param>
+        /// <param name="password"></param>
+        static void Repack(string sourceFolder, string? password = "")
+        {
+            string outputFile = $"{Path.GetFileName(sourceFolder)}.vndat";
+            string[] files = GetFilesRecursive(sourceFolder);
+            string? tempFolder = $"{sourceFolder}_temp";
+
+            // Only backup original file once
+            string backupFile = $"{outputFile}.bak";
+            if (!File.Exists(backupFile))
+            {
+                Console.WriteLine($"Backup the original file as {Path.GetFileName(backupFile)}...");
+                File.Copy(outputFile, backupFile);
+            }
+
+            bool usePassword = IsPasswordProtectedZip(backupFile);
+
+            using ZipOutputStream zipStream = new(File.Create(outputFile));
+
+            // Uses the backup file to check if it's encrypted to bypass
+            // the file is being used by another process exception.
+            if (usePassword)
+            {
+                Console.WriteLine($"Encrypting {Path.GetFileName(outputFile)} using `{password}` as the password...");
+                zipStream.Password = password;
+            }
+            else
+            {
+                Console.WriteLine($"Creating a temporary copy of {Path.GetFileName(sourceFolder)} to perform XOR encryption...");
+
+                CopyFolder(sourceFolder, tempFolder);
+                files = GetFilesRecursive(tempFolder);
+
+                foreach (string file in files)
+                {
+                    Console.WriteLine($"Encrypting {Path.GetRelativePath(sourceFolder, file)}...");
+                    XorVndatContent(file);
+                }
+            }
+
+            Console.WriteLine($"Creating {outputFile} archive...");
+
+            foreach (string filePath in files)
+            {
+                FileInfo file = new(filePath);
+                // Keep file structure by including the folder
+                string entryName = filePath[usePassword ? sourceFolder.Length.. : tempFolder.Length..].TrimStart('\\');
+                ZipEntry entry = new(entryName)
+                {
+                    DateTime = DateTime.Now,
+                    Size = file.Length
+                };
+                zipStream.PutNextEntry(entry);
+
+                using FileStream fileStream = file.OpenRead();
+                byte[] buffer = new byte[4096]; // Optimum size
+                int bytesRead;
+                while ((bytesRead = fileStream.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    zipStream.Write(buffer, 0, bytesRead);
+                }
+            }
+
+            if (!usePassword)
+            {
+                Console.WriteLine("Cleaning up temporary files...");
+                Directory.Delete(tempFolder, true);
+            }
+
+            Console.WriteLine("Done.");
+        }
+
+        /// <summary>
+        /// Check if the given file is `.vndat` file (Zip) or not.
         /// </summary>
         /// <param name="filePath"></param>
         /// <returns></returns>
-        static bool IsZip(string filePath)
+        static bool IsVndat(string filePath)
         {
             try
             {
@@ -122,10 +224,37 @@ namespace LightvnTools
         }
 
         /// <summary>
-        /// XOR the given file.
+        /// Check if the ZIP file is password protected.
         /// </summary>
         /// <param name="filePath"></param>
-        static void XORFile(string filePath)
+        /// <returns></returns>
+        static bool IsPasswordProtectedZip(string filePath)
+        {
+            try
+            {
+                using FileStream fileStream = new(filePath, FileMode.Open, FileAccess.Read);
+                using ZipInputStream zipStream = new(fileStream);
+
+                ZipEntry entry;
+                while ((entry = zipStream.GetNextEntry()) != null)
+                {
+                    if (entry.IsCrypted)
+                        return true;
+                }
+
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Encrypt (XOR) `.vndat` file content.
+        /// </summary>
+        /// <param name="filePath"></param>
+        static void XorVndatContent(string filePath)
         {
             try
             {
@@ -180,6 +309,31 @@ namespace LightvnTools
         static string[] GetFilesRecursive(string sourceFolder)
         {
             return Directory.GetFiles(sourceFolder, "*.*", SearchOption.AllDirectories);
+        }
+
+        /// <summary>
+        /// Copy entire files in a folder.
+        /// </summary>
+        /// <param name="sourceDirectory"></param>
+        /// <param name="destinationDirectory"></param>
+        static void CopyFolder(string sourceDirectory, string destinationDirectory)
+        {
+            if (!Directory.Exists(destinationDirectory))
+                Directory.CreateDirectory(destinationDirectory);
+
+            string[] files = GetFilesRecursive(sourceDirectory);
+
+            foreach (string sourceFilePath in files)
+            {
+                string relativePath = sourceFilePath[sourceDirectory.Length..].TrimStart('\\');
+                string destinationFilePath = Path.Combine(destinationDirectory, relativePath);
+
+                string destinationFileDirectory = Path.GetDirectoryName(destinationFilePath);
+                if (!Directory.Exists(destinationFileDirectory))
+                    Directory.CreateDirectory(destinationFileDirectory);
+
+                File.Copy(sourceFilePath, destinationFilePath, true);
+            }
         }
     }
 }
