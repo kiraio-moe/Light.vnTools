@@ -3,14 +3,14 @@ using ICSharpCode.SharpZipLib.Zip;
 
 namespace LightvnTools
 {
-    public class Program
+    public class LightvnTools
     {
-        static readonly string VERSION = "1.1.0";
+        static readonly string VERSION = "1.2.0";
 
         // PKZip signature
         static readonly byte[] PKZIP = { 0x50, 0x4B, 0x03, 0x04 };
 
-        // Key used to decrypt the file header and footer (reverse)
+        // Key used to XOR the file header and footer (reverse)
         // Text: `d6c5fKI3GgBWpZF3Tz6ia3kF0`
         // Source: https://github.com/morkt/GARbro/issues/440
         static readonly byte[] KEY = { 0x64, 0x36, 0x63, 0x35, 0x66, 0x4B, 0x49, 0x33, 0x47, 0x67, 0x42, 0x57, 0x70, 0x5A, 0x46, 0x33, 0x54, 0x7A, 0x36, 0x69, 0x61, 0x33, 0x6B, 0x46, 0x30 };
@@ -23,26 +23,65 @@ namespace LightvnTools
                 Console.WriteLine($"Light.vnTools v{VERSION}");
                 Console.WriteLine();
                 Console.WriteLine(
-                    "Light.vnTools is an unpack and repacking tool for Light.vn game engine (lightvn.net)."
+                    "Light.vnTools is an unpack and repacking tool for game made with Light.vn game engine (lightvn.net)."
                 );
                 Console.WriteLine();
                 Console.WriteLine("Usage:");
-                Console.WriteLine("  Unpack: Drag and drop '.vndat' file to 'LightvnTools.exe'");
+                Console.WriteLine("  Unpack: Drag and drop '.vndat' / '.mcdat' file(s) to 'LightvnTools.exe'");
                 Console.WriteLine("  Repack: Drag and drop unpacked folder to 'LightvnTools.exe'");
-                Console.ReadLine();
+                Console.ReadKey();
                 return;
             }
 
-            string input = args[0];
             string zipPassword = Encoding.UTF8.GetString(KEY);
 
-            if (File.Exists(input))
-                Unpack(input, Path.GetFileNameWithoutExtension(input), zipPassword);
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (File.Exists(args[i]))
+                {
+                    if (IsVndat(args[i]))
+                    {
+                        UnpackVndat(args[i], Path.GetFileNameWithoutExtension(args[i]), zipPassword);
+                    }
+                    else if (Path.GetExtension(args[i]).Contains("mcdat"))
+                    {
+                        Console.WriteLine($"Decrypting {args[i]}...");
+                        XOR(args[i], $"{args[i]}.dec");
+                    }
+                    else if (Path.GetExtension(args[i]).Contains("dec"))
+                    {
+                        Console.WriteLine($"Encrypting {args[i]}...");
+                        XOR(args[i], args[i].Replace("dec", "enc"));
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Unsupported file! {args[i]}");
+                        break;
+                    }
+                }
 
-            if (Directory.Exists(input))
-                Repack(input, zipPassword);
+                if (Directory.Exists(args[i]))
+                {
+                    RepackVndat(args[i], zipPassword);
+                    GetFilesRecursive(args[i]).ToList().ForEach(path =>
+                    {
+                        if (path.Contains("mcdat"))
+                        {
+                            Console.WriteLine($"Decrypting {path}...");
+                            XOR(path, $"{path}.dec");
+                        }
+                        else if (path.Contains("dec"))
+                        {
+                            Console.WriteLine($"Encrypting {path}...");
+                            XOR(path, path.Replace("dec", "enc"));
+                        }
+                    });
+                }
+            }
 
-            Console.ReadLine();
+            Console.WriteLine("\nDone.");
+            Console.ReadKey();
+            return;
         }
 
         /// <summary>
@@ -51,14 +90,8 @@ namespace LightvnTools
         /// <param name="vndatFile"></param>
         /// <param name="outputFolder"></param>
         /// <param name="password"></param>
-        static void Unpack(string vndatFile, string outputFolder, string? password = "")
+        static void UnpackVndat(string vndatFile, string outputFolder, string? password = "")
         {
-            if (!IsVndat(vndatFile))
-            {
-                Console.WriteLine($"{Path.GetFileName(vndatFile)} isn\'t a `.vndat` (zip) file!");
-                return;
-            }
-
             bool usePassword = IsPasswordProtectedZip(vndatFile);
 
             using ZipFile zipFile = new(vndatFile);
@@ -100,7 +133,7 @@ namespace LightvnTools
                 Console.WriteLine("Done.");
             }
 
-            // Only XOR `.vndat` contents that's not password protected.
+            // Only XOR the `.vndat` contents if the archive is not password protected.
             if (!usePassword)
             {
                 string[] files = GetFilesRecursive(outputFolder);
@@ -109,8 +142,8 @@ namespace LightvnTools
                 {
                     foreach (string file in files)
                     {
-                        Console.WriteLine($"Decrypting {file}...");
-                        XorVndatContent(file);
+                        Console.WriteLine($"XORing {file}...");
+                        XOR(file);
                     }
 
                     Console.WriteLine("Done.");
@@ -123,7 +156,7 @@ namespace LightvnTools
         /// </summary>
         /// <param name="sourceFolder"></param>
         /// <param name="password"></param>
-        static void Repack(string sourceFolder, string? password = "")
+        static void RepackVndat(string sourceFolder, string? password = "")
         {
             string outputFile = $"{Path.GetFileName(sourceFolder)}.vndat";
             string[] files = GetFilesRecursive(sourceFolder);
@@ -158,7 +191,7 @@ namespace LightvnTools
                 foreach (string file in files)
                 {
                     Console.WriteLine($"Encrypting {Path.GetRelativePath(sourceFolder, file)}...");
-                    XorVndatContent(file);
+                    XOR(file);
                 }
             }
 
@@ -251,48 +284,53 @@ namespace LightvnTools
         }
 
         /// <summary>
-        /// Encrypt (XOR) `.vndat` file content.
+        /// XOR <paramref name="buffer"/> data.
+        /// </summary>
+        /// <param name="buffer"></param>
+        /// <returns></returns>
+        static byte[] XOR(byte[] buffer)
+        {
+            if (buffer.Length < 100)
+            {
+                if (buffer.Length <= 0)
+                    return buffer;
+
+                // XOR entire bytes
+                for (int i = 0; i < buffer.Length; i++)
+                    buffer[i] ^= REVERSED_KEY[i % KEY.Length];
+            }
+            else
+            {
+                // XOR the first 100 bytes
+                for (int i = 0; i < 100; i++)
+                    buffer[i] ^= KEY[i % KEY.Length];
+
+                // XOR the last 100 bytes
+                for (int i = 0; i < 99; i++)
+                    buffer[buffer.Length - 99 + i] ^= REVERSED_KEY[i % KEY.Length];
+            }
+
+            return buffer;
+        }
+
+        /// <summary>
+        /// Do XOR operation on the <paramref name="filePath"/>.
         /// </summary>
         /// <param name="filePath"></param>
-        static void XorVndatContent(string filePath)
+        static void XOR(string filePath, string? outputFilePath = null)
         {
             try
             {
                 byte[] buffer;
                 int bufferLength;
 
-                using (FileStream inputStream = File.OpenRead(filePath))
-                {
-                    buffer = new byte[bufferLength = (int)inputStream.Length];
-                    inputStream.Read(buffer, 0, bufferLength);
-                }
+                using FileStream inputStream = File.OpenRead(filePath);
+                buffer = new byte[bufferLength = (int)inputStream.Length];
+                inputStream.Read(buffer, 0, bufferLength);
 
-                if (bufferLength < 100)
-                {
-                    if (bufferLength == 0)
-                    {
-                        Console.WriteLine($"Skipping {filePath}. File is empty.");
-                        return;
-                    }
+                buffer = XOR(buffer);
 
-                    Console.WriteLine($"File size is smaller than 100 bytes: {filePath}");
-
-                    // XOR entire bytes
-                    for (int i = 0; i < bufferLength; i++)
-                        buffer[i] ^= REVERSED_KEY[i % KEY.Length];
-                }
-                else
-                {
-                    // XOR the first 100 bytes
-                    for (int i = 0; i < 100; i++)
-                        buffer[i] ^= KEY[i % KEY.Length];
-
-                    // XOR the last 100 bytes
-                    for (int i = 0; i < 99; i++)
-                        buffer[bufferLength - 99 + i] ^= REVERSED_KEY[i % KEY.Length];
-                }
-
-                using FileStream outputStream = File.OpenWrite(filePath);
+                using FileStream outputStream = File.OpenWrite(outputFilePath ?? filePath);
                 outputStream.Write(buffer, 0, bufferLength);
             }
             catch (Exception ex)
